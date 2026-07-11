@@ -68,7 +68,7 @@ def get_command_result(cmd_id):
     return row[0] if row else None
 
 # ---------- ОБРАБОТЧИКИ КОМАНД БОТА ----------
-TOKEN = "ВАШ_НОВЫЙ_ТОКЕН"  # замените
+TOKEN = "8451519620:AAGNpryYEiYzWIHyoZtz7GDmSJdwNXEXUkE"  # замените
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
