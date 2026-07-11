@@ -367,7 +367,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ЗАПУСК БОТА ----------
 def main():
-    TOKEN = "ВАШ_НОВЫЙ_ТОКЕН_ОТ_BOTFATHER"   # ОБЯЗАТЕЛЬНО ЗАМЕНИТЕ!
+    TOKEN = "8451519620:AAGNpryYEiYzWIHyoZtz7GDmSJdwNXEXUkE"   # ОБЯЗАТЕЛЬНО ЗАМЕНИТЕ!
     init_db()
     application = Application.builder().token(TOKEN).build()
 
