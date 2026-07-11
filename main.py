@@ -32,8 +32,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # ========== КОНФИГУРАЦИЯ ==========
-TOKEN = "ВАШ_НОВЫЙ_ТОКЕН_ОТ_BOTFATHER"  # ← СЮДА ВСТАВЬТЕ НОВЫЙ ТОКЕН!
-AUTHORIZED_USERS = []      # список Telegram ID (числа) — оставьте пустым для открытого доступа
+TOKEN = "8451519620:AAGNpryYEiYzWIHyoZtz7GDmSJdwNXEXUkE"  # ← СЮДА ВСТАВЬТЕ НОВЫЙ ТОКЕН!
+AUTHORIZED_USERS = [6648834014]      # список Telegram ID (числа) — оставьте пустым для открытого доступа
 DB_FILE = "clients.db"
 BUILD_DIR = "build_output"
 
